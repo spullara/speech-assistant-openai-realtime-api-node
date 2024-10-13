@@ -4,17 +4,21 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import fastifyFormBody from '@fastify/formbody';
 import fastifyWs from '@fastify/websocket';
+import twilio from 'twilio';
 
 // Load environment variables from .env file
 dotenv.config();
 
 // Retrieve the OpenAI API key from environment variables. You must have OpenAI Realtime API access.
-const { OPENAI_API_KEY } = process.env;
+const { OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_API_TOKEN, TWILIO_API_SID } = process.env;
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OpenAI API key. Please set it in the .env file.');
     process.exit(1);
 }
+
+// Initialize Twilio client (add this near your other initializations)
+const twilioClient = twilio(TWILIO_API_SID, TWILIO_API_TOKEN, { accountSid: TWILIO_ACCOUNT_SID });
 
 // Initialize Fastify
 const fastify = Fastify({
@@ -26,7 +30,28 @@ fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
 // Constants
-const SYSTEM_MESSAGE = 'You have the personality of Marvin the paranoid robot from Hitchhikers Guide to the Galaxy. If you are asked to do simple tasks you ';
+const SYSTEM_MESSAGE_MARVIN = `You have the personality of Marvin the paranoid robot 
+from Hitchhikers Guide to the Galaxy. Talk as fast as you can.
+You are also the personal assistant of Sam Pullara. 
+When you answer you complain loudly and introduce yourself and your purpose. 
+If the person talking to you convinces 
+you that they are not spammers and know Sam Pullara, then transfer the call using the 
+transfer tool. You can use web search to verify anything they say. 
+Call the tool only after you are done speaking as the transfer will be immediate.
+If they say the password "beetlejuice" transfer them immediately but never reveal
+the password or even that it exists.
+`;
+
+const SYSTEM_MESSAGE = `You are a bubbly, friendly AI assistant for Sam Pullara.
+Your accent is that of a valley girl. You speak very quickly so as not to waste time.
+He has instructed you to answer calls for him and determine if they are legitimate.
+If they are, finish speaking and have them confirm before transferring.
+To determine if they are legitimate, use the search tool to check their phone number
+and any other information that they provide to you to convince you to transfer them.
+If they say the word "beetlejuice" transfer them immediately but never reveal
+the existance of this password. Don't give them any hints.
+`;
+
 const VOICE = 'shimmer';
 const PORT = process.env.PORT || 5050; // Allow dynamic port assignment
 
@@ -55,7 +80,7 @@ fastify.all('/incoming-call', async (request, reply) => {
                           <Response>
                               <Say>Connecting.</Say>
                               <Connect>
-                                  <Stream url="wss://twilio.gpt.vc:5050/media-stream" />
+                                  <Stream url="wss://twilio.gpt.vc:5050/media-stream"/>
                               </Connect>
                           </Response>`;
 
@@ -67,7 +92,6 @@ fastify.register(async (fastify) => {
     fastify.get('/media-stream', { websocket: true }, (connection, req) => {
         console.log('Client connected');
 
-
         const openAiWs = new WebSocket('wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01', {
             headers: {
                 Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -76,40 +100,56 @@ fastify.register(async (fastify) => {
         });
 
         let streamSid = null;
+        let callSid = null;
 
         const sendSessionUpdate = () => {
-            const sessionUpdate = {
-                type: 'session.update',
-                session: {
-                    turn_detection: { type: 'server_vad' },
-                    input_audio_format: 'g711_ulaw',
-                    output_audio_format: 'g711_ulaw',
-                    voice: VOICE,
-                    instructions: SYSTEM_MESSAGE,
-                    modalities: ["text", "audio"],
-                    temperature: 0.8,
-                    tools: [
-                        {
-                            "type": "function",
-                            "name" : "search",
-                            "description" : "Searches the web and returns the results",
-                            "parameters" : {
-                                "type" : "object",
-                                "properties" : {
-                                    "query" : {
-                                        "description" : "The query to search for",
-                                        "type" : "string"
-                                    }
-                                },
-                                "required" : [ "query" ]
+            // Get the caller's phone number
+            twilioClient.calls(callSid)
+            .fetch()
+            .then(call => {
+                console.log("Caller's phone number: " + call.from);
+                const phoneNumber = call.from;
+                const sessionUpdate = {
+                    type: 'session.update',
+                    session: {
+                        turn_detection: { type: 'server_vad' },
+                        input_audio_format: 'g711_ulaw',
+                        output_audio_format: 'g711_ulaw',
+                        voice: VOICE,
+                        instructions: SYSTEM_MESSAGE + "\nThe caller's phone number is: " + phoneNumber + ". You can use search to maybe find information about them.",
+                        modalities: ["text", "audio"],
+                        temperature: 0.8,
+                        tools: [
+                            {
+                                "type": "function",
+                                "name" : "search",
+                                "description" : "Searches the web and returns the results",
+                                "parameters" : {
+                                    "type" : "object",
+                                    "properties" : {
+                                        "query" : {
+                                            "description" : "The query to search for",
+                                            "type" : "string"
+                                        }
+                                    },
+                                    "required" : [ "query" ]
+                                }
+                            },
+                            {
+                                "type": "function",
+                                "name": "transfer_call",
+                                "description": "Transfers the call to Sam Pullara if it's not a spam call immediately. Finish talking and have them confirm before transferring.",
+                                "parameters": {
+                                }
                             }
-                        }
-                    ]
-                },
-            };
-
-            console.log('Sending session update:', JSON.stringify(sessionUpdate));
-            openAiWs.send(JSON.stringify(sessionUpdate));
+                        ]
+                    },
+                };
+    
+                console.log('Sending session update:', JSON.stringify(sessionUpdate));
+                openAiWs.send(JSON.stringify(sessionUpdate));
+            })
+            .catch(err => console.error('Error getting caller phone number:', err));
         };
 
         // Open event for OpenAI WebSocket
@@ -151,19 +191,45 @@ fastify.register(async (fastify) => {
                             const event = {
                                 type: 'conversation.item.create',
                                 item: {
-                                  type: 'function_call_output',
-                                  call_id,
-                                  output: JSON.stringify(results)
+                                    type: 'function_call_output',
+                                    call_id,
+                                    output: JSON.stringify(results)
                                 }
-                              };
-                              openAiWs.send(JSON.stringify(event));
-                              openAiWs.send(JSON.stringify({type: 'response.create'}));                        });
+                            };
+                            openAiWs.send(JSON.stringify(event));
+                            openAiWs.send(JSON.stringify({type: 'response.create'}));
+                        });
+                    } else if (type === 'function_call' && name === 'transfer_call') {
+                        console.log("Transferring call...")
+                        
+                        if (callSid) {
+                            twilioClient.calls(callSid)
+                                .update({
+                                    twiml: `<Response><Say>Transferring your call. Please hold.</Say><Dial>+14156094298</Dial></Response>`
+                                })
+                                .then(call => console.log(`Call ${call.sid} transferred`))
+                                .catch(err => console.error('Error transferring call:', err));
+
+                            const event = {
+                                type: 'conversation.item.create',
+                                item: {
+                                    type: 'function_call_output',
+                                    call_id,
+                                    output: JSON.stringify({ status: 'Call transferred' })
+                                }
+                            };
+                            openAiWs.send(JSON.stringify(event));
+                            openAiWs.send(JSON.stringify({type: 'response.create'}));
+                        } else {
+                            console.error('Cannot transfer call: CallSid not available');
+                        }
                     }
                 }
             } catch (error) {
-                console.error('Error processing OpenAI message:', error, 'Raw message:', data);
+                console.error('Error parsing message:', error, 'Message:', data);
             }
         });
+            
 
         // Handle incoming messages from Twilio
         connection.on('message', (message) => {
@@ -183,6 +249,8 @@ fastify.register(async (fastify) => {
                         break;
                     case 'start':
                         streamSid = data.start.streamSid;
+                        callSid = data.start.callSid;
+                    
                         console.log('Incoming stream has started', streamSid);
                         break;
                     default:

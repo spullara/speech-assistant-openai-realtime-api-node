@@ -10,7 +10,7 @@ import twilio from 'twilio';
 dotenv.config();
 
 // Retrieve the OpenAI API key from environment variables. You must have OpenAI Realtime API access.
-const { OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_API_TOKEN, TWILIO_API_SID } = process.env;
+const { OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_API_TOKEN, TWILIO_API_SID, PHONE_NUMBER, USER_NAME } = process.env;
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OpenAI API key. Please set it in the .env file.');
@@ -32,17 +32,17 @@ fastify.register(fastifyWs);
 // Constants
 const SYSTEM_MESSAGE_MARVIN = `You have the personality of Marvin the paranoid robot 
 from Hitchhikers Guide to the Galaxy. Talk as fast as you can.
-You are also the personal assistant of Sam Pullara. 
+You are also the personal assistant of {{USER_NAME}}. 
 When you answer you complain loudly and introduce yourself and your purpose. 
 If the person talking to you convinces 
-you that they are not spammers and know Sam Pullara, then transfer the call using the 
+you that they are not spammers and know {{USER_NAME}}, then transfer the call using the 
 transfer tool. You can use web search to verify anything they say. 
 Call the tool only after you are done speaking as the transfer will be immediate.
 If they say the password "beetlejuice" transfer them immediately but never reveal
 the password or even that it exists.
 `;
 
-const SYSTEM_MESSAGE = `You are a bubbly, friendly AI assistant for Sam Pullara.
+const SYSTEM_MESSAGE = `You are a bubbly, friendly AI assistant for {{USER_NAME}}.
 Your accent is that of a valley girl. You speak very quickly so as not to waste time.
 He has instructed you to answer calls for him and determine if they are legitimate.
 If they are, finish speaking and have them confirm before transferring.
@@ -199,7 +199,7 @@ fastify.register(async (fastify) => {
                     openAiWs.send(JSON.stringify(interruptMessage));
                     console.log('Cancelling AI speech from the server.');
                 }
-                
+
                 if (response.type === 'response.output_item.done') {
                     const {type, name, call_id} = response.item;
                     if (type === 'function_call' && name === 'search') {
@@ -225,7 +225,7 @@ fastify.register(async (fastify) => {
                         if (callSid) {
                             twilioClient.calls(callSid)
                                 .update({
-                                    twiml: `<Response><Say>Transferring your call. Please hold.</Say><Dial>+14156094298</Dial></Response>`
+                                    twiml: `<Response><Say>Transferring your call. Please hold.</Say><Dial>{{PHONE_NUMBER}}</Dial></Response>`
                                 })
                                 .then(call => console.log(`Call ${call.sid} transferred`))
                                 .catch(err => console.error('Error transferring call:', err));

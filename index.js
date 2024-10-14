@@ -180,6 +180,26 @@ fastify.register(async (fastify) => {
                     connection.send(JSON.stringify(audioDelta));
                 }
 
+                // Add the new code to handle input_audio_buffer.speech_started event
+                if (response.type === 'input_audio_buffer.speech_started') {
+                    console.log('Speech Start:', response.type);
+
+                    // Clear Twilio buffer
+                    const clearTwilio = {
+                        streamSid: streamSid,
+                        event: "clear"
+                    };
+                    connection.send(JSON.stringify(clearTwilio));
+                    console.log('Cleared Twilio buffer.');
+
+                    // Send interrupt message to OpenAI
+                    const interruptMessage = {
+                        type: "response.cancel"
+                    };
+                    openAiWs.send(JSON.stringify(interruptMessage));
+                    console.log('Cancelling AI speech from the server.');
+                }
+                
                 if (response.type === 'response.output_item.done') {
                     const {type, name, call_id} = response.item;
                     if (type === 'function_call' && name === 'search') {
